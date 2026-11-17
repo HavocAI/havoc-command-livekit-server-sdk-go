@@ -1001,10 +1001,6 @@ func (p *LocalParticipant) StreamText(options StreamTextOptions) *TextStreamWrit
 
 	writer := newTextStreamWriter(info, header, p.engine, options.DestinationIdentities, options.OnProgress)
 
-	p.engine.OnClose(func() {
-		writer.Close()
-	})
-
 	return writer
 }
 
@@ -1123,10 +1119,6 @@ func (p *LocalParticipant) StreamBytes(options StreamBytesOptions) *ByteStreamWr
 	}
 
 	writer := newByteStreamWriter(info, header, p.engine, options.DestinationIdentities, options.OnProgress)
-
-	p.engine.OnClose(func() {
-		writer.Close()
-	})
 
 	return writer
 }
