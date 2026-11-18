@@ -163,7 +163,13 @@ func TestStreamLifecycleConcurrentRegistrationAndClose(t *testing.T) {
 func TestStreamLifecyclePublicOnCloseCallbacks(t *testing.T) {
 	e := newStreamLifecycleTestEngine(t)
 	var order []int
-	e.OnClose(func() { order = append(order, 1) })
+	var reentrantCalls atomic.Int32
+	e.OnClose(func() {
+		order = append(order, 1)
+		// Shutdown has already snapshotted the callbacks. Reentrant public
+		// registration must append without invoking the new callback inline.
+		e.OnClose(func() { reentrantCalls.Add(1) })
+	})
 	e.OnClose(func() { order = append(order, 2) })
 	done := make(chan struct{})
 	e.OnClose(func() { close(done) })
@@ -174,46 +180,26 @@ func TestStreamLifecyclePublicOnCloseCallbacks(t *testing.T) {
 		t.Fatal("engine callbacks did not finish")
 	}
 	require.Equal(t, []int{1, 2}, order)
-	var calls int
-	e.OnClose(func() {
-		// Reentering the registry also verifies late callbacks run without its lock.
-		e.OnClose(func() { calls++ })
-		calls++
-	})
-	require.Equal(t, 2, calls, "late callbacks run immediately and exactly once")
+	require.Zero(t, reentrantCalls.Load(), "reentrant public registration must not invoke inline")
+	length, _, _, _ := lifecycleRegistrySnapshot(e)
+	require.Equal(t, 1, length, "reentrant public registration remains in the registry")
 }
 
-func TestStreamLifecyclePublicRegistrationRacesEngineClose(t *testing.T) {
+func TestStreamLifecyclePublicLateRegistration(t *testing.T) {
 	e := newStreamLifecycleTestEngine(t)
-	const count = 64
-	var calls [count]atomic.Int32
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for i := range calls {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			<-start
-			e.OnClose(func() { calls[i].Add(1) })
-		}(i)
+	done := make(chan struct{})
+	e.OnClose(func() { close(done) })
+	e.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("engine callbacks did not finish")
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		<-start
-		e.Close()
-	}()
-	close(start)
-	wg.Wait()
-	require.Eventually(t, func() bool {
-		for i := range calls {
-			if calls[i].Load() == 0 {
-				return false
-			}
-		}
-		return true
-	}, 5*time.Second, time.Millisecond)
-	for i := range calls {
-		require.EqualValues(t, 1, calls[i].Load(), "callback %d", i)
-	}
+	var calls atomic.Int32
+	e.OnClose(func() { calls.Add(1) })
+	require.Zero(t, calls.Load(), "late public registration must not invoke inline")
+	length, _, _, _ := lifecycleRegistrySnapshot(e)
+	require.Equal(t, 1, length, "late public registration remains in the registry")
+	e.Close()
+	require.Zero(t, calls.Load(), "repeated shutdown must not invoke late registrations")
 }

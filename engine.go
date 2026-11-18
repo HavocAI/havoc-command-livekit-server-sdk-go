@@ -357,7 +357,9 @@ func (e *RTCEngine) join(
 }
 
 func (e *RTCEngine) OnClose(onClose func()) {
-	e.addOnClose(&engineCloseHandler{callback: onClose})
+	e.onCloseLock.Lock()
+	e.onClose = append(e.onClose, &engineCloseHandler{callback: onClose})
+	e.onCloseLock.Unlock()
 }
 
 func (e *RTCEngine) addOnClose(handler *engineCloseHandler) {
