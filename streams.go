@@ -104,9 +104,10 @@ type baseStreamWriter[T any] struct {
 	totalSize             *uint64
 	onProgress            func(progress float64)
 
-	chunkIndex uint64
-	closed     core.Fuse
-	lock       sync.Mutex
+	chunkIndex    uint64
+	closed        core.Fuse
+	lock          sync.Mutex
+	onEngineClose engineCloseHandler
 
 	writeQueue chan writeTask
 }
@@ -122,6 +123,11 @@ func newBaseStreamWriter[T any](engine *RTCEngine, header *protocol.DataStream_H
 	}
 
 	engine.publishStreamHeader(header, destinationIdentities)
+
+	// Initialize the registration before exposing it to engine shutdown, which
+	// may invoke Close immediately if the connection has already closed.
+	base.onEngineClose.callback = base.Close
+	engine.addOnClose(&base.onEngineClose)
 
 	go base.processWriteQueue()
 	return base
@@ -179,6 +185,7 @@ func (w *baseStreamWriter[T]) Write(data T, onDone *func()) {
 // Close the stream, this will send a stream trailer to notify the receiver that the stream is closed
 func (w *baseStreamWriter[T]) Close() {
 	w.closed.Once(func() {
+		w.engine.removeOnClose(&w.onEngineClose)
 		w.lock.Lock()
 		w.engine.publishStreamTrailer(w.streamId, w.destinationIdentities)
 		w.lock.Unlock()

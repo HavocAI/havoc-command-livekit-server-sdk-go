@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -107,6 +108,10 @@ const (
 	initialMediaSectionsVideo = 3
 )
 
+type engineCloseHandler struct {
+	callback func()
+}
+
 type RTCEngine struct {
 	log protoLogger.Logger
 
@@ -140,7 +145,7 @@ type RTCEngine struct {
 
 	dataCryptor *e2ee.DataCryptor // E2EE data channel encryption (nil = disabled)
 
-	onClose     []func()
+	onClose     []*engineCloseHandler
 	onCloseLock sync.Mutex
 
 	*connectionManager
@@ -353,7 +358,27 @@ func (e *RTCEngine) join(
 
 func (e *RTCEngine) OnClose(onClose func()) {
 	e.onCloseLock.Lock()
-	e.onClose = append(e.onClose, onClose)
+	e.onClose = append(e.onClose, &engineCloseHandler{callback: onClose})
+	e.onCloseLock.Unlock()
+}
+
+func (e *RTCEngine) addOnClose(handler *engineCloseHandler) {
+	e.onCloseLock.Lock()
+	if e.closed.Load() {
+		e.onCloseLock.Unlock()
+		handler.callback()
+		return
+	}
+	e.onClose = append(e.onClose, handler)
+	e.onCloseLock.Unlock()
+}
+
+func (e *RTCEngine) removeOnClose(handler *engineCloseHandler) {
+	e.onCloseLock.Lock()
+	if index := slices.Index(e.onClose, handler); index >= 0 {
+		// Delete also clears the backing array's reference to the handler.
+		e.onClose = slices.Delete(e.onClose, index, index+1)
+	}
 	e.onCloseLock.Unlock()
 }
 
@@ -375,11 +400,11 @@ func (e *RTCEngine) Close() {
 
 		e.onCloseLock.Lock()
 		onClose := e.onClose
-		e.onClose = []func(){}
+		e.onClose = nil
 		e.onCloseLock.Unlock()
 
 		for _, onCloseHandler := range onClose {
-			onCloseHandler()
+			onCloseHandler.callback()
 		}
 
 		if publisher, ok := e.Publisher(); ok {
